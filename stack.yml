@@ -1,0 +1,583 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Creates IAM roles, policies, KMS keys, and an S3 bucket to support the migration from
+  the source database into Aurora DSQL.
+
+
+Parameters:
+
+  DSQLClusterEndpoint:
+    Description: The endpoint for the target DSQL database cluster
+    Type: String
+  
+  DSQLClusterArn:
+    Description: The ARN of the target DSQL database cluster
+    Type: String
+
+  LoaderJobCapacity:
+    Description: The maximum capacity in AWS Glue data processing units (DPUs) that can be allocated to the DSQL loader job
+    Type: Number
+    Default: 10
+    MinValue: 2
+    MaxValue: 100
+
+  ExportJobName:
+    Description: The name of the database snapshot export job. This name should be unique in your account.
+    Type: String
+    Default: export-storefront
+
+  SourceDatabaseName:
+    Description: The name of the database our data is in
+    Type: String
+    Default: storefront
+
+  SourceSchemaName:
+    Description: The name of the database schema our source tables are in
+    Type: String
+    Default: sales
+
+
+Resources:
+
+  ExportBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join ["-", ["storefront", !Ref AWS::AccountId]]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+
+  EmptyS3BucketFunctionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: "EmptyS3BucketFunctionRights"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:DeleteObject"
+                  - "s3:DeleteObjectVersion"
+                  - "s3:ListBucket"
+                  - "s3:ListBucketVersions"
+                Resource:
+                  - !GetAtt ExportBucket.Arn
+                  - !Sub '${ExportBucket.Arn}/*'
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+
+  EmptyS3BucketFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Description: "Deletes all objects and object versions from an S3 bucket"
+      Handler: index.handler
+      Runtime: python3.11
+      Timeout: 300
+      Role: !GetAtt EmptyS3BucketFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import cfnresponse
+          import logging
+          import boto3
+          
+          logger = logging.getLogger()
+          logger.setLevel(logging.DEBUG)
+          
+          s3_client = boto3.client('s3')
+          
+          
+          def handler(event, context):
+              respond_to_cfn = not ('test' in event or (__name__ == "__main__"))
+              response_data = {}
+          
+              if 'RequestType' not in event or event['RequestType'] != 'Delete':
+                  if respond_to_cfn:
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+                  return
+          
+              try:
+                  #
+                  # Validate inputs
+                  #
+                  if 'ResourceProperties' not in event:
+                      logger.error("Invalid event:  event does not contain 'ResourceProperties'")
+                      if respond_to_cfn:
+                          cfnresponse.send(event, context, cfnresponse.FAILED, response_data)
+                      return
+          
+                  parameters = event['ResourceProperties']
+                  if 'Bucket' not in parameters or len(parameters['Bucket']) < 1:
+                      logger.error("Bucket parameter not provided")
+                      if respond_to_cfn:
+                          cfnresponse.send(event, context, cfnresponse.FAILED, response_data)
+                      return
+          
+                  #
+                  # Do stuff
+                  #
+                  paginator = s3_client.get_paginator('list_object_versions')
+                  iterator = paginator.paginate(Bucket=parameters['Bucket'])
+                  for page in iterator:
+                      if 'Versions' not in page:
+                          continue
+          
+                      obj_list = []
+                      for version in page['Versions']:
+                          obj_list.append({'Key': version['Key'], 'VersionId': version['VersionId']})
+          
+                      kill_object = {'Quiet': False, 'Objects': obj_list}
+                      s3_client.delete_objects(Bucket=parameters['Bucket'], Delete=kill_object)
+          
+                  if respond_to_cfn:
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+          
+                  return response_data
+              except:
+                  logger.exception(event)
+          
+                  if respond_to_cfn:
+                      cfnresponse.send(event, context, cfnresponse.FAILED, response_data)
+
+
+  EmptyExportBucket:
+    Type: Custom::EmptyLambdaCodeBucket
+    Properties:
+      ServiceToken: !GetAtt EmptyS3BucketFunction.Arn
+      Bucket: !Ref ExportBucket
+
+
+  S3ObjectPutterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: "S3ObjectPutterS3Access"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "s3:DeleteObject"
+                  - "s3:GetObject"
+                  - "s3:ListBucket"
+                  - "s3:PutObject"
+                Resource:
+                  - !GetAtt ExportBucket.Arn
+                  - !Sub '${ExportBucket.Arn}/*'
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+
+  S3ObjectPutterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: "Writes provided object content to S3"
+      Runtime: python3.11
+      Handler: index.handler
+      MemorySize: 128
+      Timeout: 300
+      Role: !GetAtt S3ObjectPutterRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          
+          s3 = boto3.client('s3')
+          
+          def handler(event, context):
+            try:
+              responseData = {}
+                    
+              if event['RequestType'] == 'Delete':
+                s3.delete_object(Bucket=event['ResourceProperties']['S3Bucket'], Key=event['ResourceProperties']['S3Key'])
+              elif event['RequestType'] == 'Create':          
+                s3.put_object(Bucket=event['ResourceProperties']['S3Bucket'], Key=event['ResourceProperties']['S3Key'],
+                              Body=event['ResourceProperties']['Body'].encode())
+              elif event['RequestType'] == 'Update':
+                  delete = False
+                  if event['ResourceProperties']['S3Bucket'] != event['OldResourceProperties']['S3Bucket']:
+                    delete = True
+                  elif event['ResourceProperties']['S3Key'] != event['OldResourceProperties']['S3Key']:
+                    delete = True
+          
+                  if delete:
+                    s3.delete_object(Bucket=event['OldResourceProperties']['S3Bucket'], Key=event['OldResourceProperties']['S3Key'])
+                    s3.put_object(Bucket=event['ResourceProperties']['S3Bucket'], Key=event['ResourceProperties']['S3Key'],
+                              Body=event['ResourceProperties']['Body'].encode())
+                  else:
+                    if event['ResourceProperties']['Body'] != event['OldResourceProperties']['Body']:
+                      s3.put_object(Bucket=event['ResourceProperties']['S3Bucket'], Key=event['ResourceProperties']['S3Key'],
+                              Body=event['ResourceProperties']['Body'].encode())
+
+              responseData['S3Url'] = 's3://{}/{}'.format(event['ResourceProperties']['S3Bucket'], event['ResourceProperties']['S3Key'])
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+            except Exception as e:
+              print(e)
+              reason = f"Exception thrown: {e}"
+              cfnresponse.send(event, context, cfnresponse.FAILED, {}, reason=reason)
+
+
+  PutGlueJobCodeToS3:
+    Type: Custom::S3PutObject
+    Properties:
+      ServiceToken: !GetAtt S3ObjectPutterFunction.Arn
+      S3Bucket:  !Ref ExportBucket
+      S3Key:  'glue/migration.py'
+      Body: |
+        import boto3
+        import sys
+
+        from awsglue.transforms import *
+        from awsglue.utils import getResolvedOptions
+        from pyspark.context import SparkContext
+        from awsglue.context import GlueContext
+        from awsglue.dynamicframe import DynamicFrame
+        from pyspark.sql import SparkSession
+        from pyspark.sql import functions as func
+        from pyspark.sql.functions import to_timestamp, to_date, col
+        from awsglue.job import Job
+
+        # Read job configuration parameters
+        args = getResolvedOptions(sys.argv, ['JOB_NAME', 'dsql_endpoint', 'glue_database', 'schema'])
+
+        # Job initializations
+        dsql = boto3.client('dsql')
+        sc = SparkContext()
+        glueContext = GlueContext(sc)
+        spark = glueContext.spark_session
+        job = Job(glueContext)
+        job.init(args['JOB_NAME'], args)
+
+        # Read the exported snapshot tables from S3
+        customers_df = glueContext.create_dynamic_frame_from_catalog(database=args['glue_database'], table_name=args['schema'] + '_customers').toDF()
+        orders_df = glueContext.create_dynamic_frame_from_catalog(database=args['glue_database'], table_name=args['schema'] + '_orders').toDF()
+
+        # Perform transformations for the customers table
+        customers_df.createOrReplaceTempView('customers')
+        customers_adjusted = spark.sql('SELECT uuid() AS id, customers.id AS old_id, username, first_name, last_name FROM customers')
+        customers_adjusted.createOrReplaceTempView('customers')
+
+        # Perform transformations for the orders table
+        orders_df.createOrReplaceTempView('orders')
+        orders_adjusted = spark.sql('SELECT uuid() AS id, orders.id AS old_id, customer_id as old_customer_id, order_date, order_timestamp, product_details, quantity, unit_cost, unit_weight FROM orders')
+
+        orders_adjusted = orders_adjusted.withColumn('order_timestamp', to_timestamp(col('order_timestamp')))
+        orders_adjusted = orders_adjusted.withColumn('order_date', to_date(col('order_date')))
+
+        # Fix foreign key relationship between orders and customers
+        orders_adjusted.createOrReplaceTempView('orders')
+        orders_final = spark.sql('select o.id, c.id as customer_id, o.order_date, o.order_timestamp, o.product_details, o.quantity, o.unit_cost, o.unit_weight from orders o inner join customers c on o.old_customer_id = c.old_id')
+
+        customers_adjusted = customers_adjusted.drop('old_id')
+
+        # Fetch token for authorization
+        jdbc_url = 'jdbc:postgresql://' + args['dsql_endpoint'] + ':5432/postgres?sslmode=require'
+        password = dsql.generate_db_connect_admin_auth_token(args['dsql_endpoint'], ExpiresIn=28800)
+
+        # Write tables to DSQL
+        customers_adjusted.write \
+            .format('jdbc') \
+            .mode('append') \
+            .option('url', jdbc_url) \
+            .option('dbtable', 'sales.customers') \
+            .option('user', 'admin') \
+            .option("password", password) \
+            .option('sslmode', 'require') \
+            .option('isolationLevel', 'NONE') \
+            .option('batchsize', '2500') \
+            .option('stringtype', 'unspecified') \
+            .save()
+            
+        orders_final.write \
+            .format('jdbc') \
+            .mode('append') \
+            .option('url', jdbc_url) \
+            .option('dbtable', 'sales.orders') \
+            .option('user', 'admin') \
+            .option('password', password) \
+            .option('sslmode', 'require') \
+            .option('isolationLevel', 'NONE') \
+            .option('batchsize', '2500') \
+            .option('stringtype', 'unspecified') \
+            .save()
+            
+        job.commit()
+
+  KmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      EnableKeyRotation: true
+
+
+  SnapshotExportRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Policies:
+        - PolicyName: ExportPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject*
+                  - s3:ListBucket
+                  - s3:GetObject*
+                  - s3:DeleteObject*
+                  - s3:GetBucketLocation
+                Resource:
+                  - !GetAtt ExportBucket.Arn
+                  - !Sub '${ExportBucket.Arn}/*'
+        - PolicyName: 'ExportKeyUsage'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                  - kms:GenerateDataKeyWithoutPlaintext
+                  - kms:ReEncryptFrom
+                  - kms:ReEncryptTo
+                  - kms:CreateGrant
+                  - kms:DescribeKey
+                  - kms:RetireGrant
+                Resource:
+                  - !GetAtt KmsKey.Arn
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "export.rds.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+  GlueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSGlueSchemaRegistryFullAccess
+      Policies:
+        - PolicyName: GlueDsqlAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dsql:DbConnectAdmin
+                Resource:
+                  - !Ref DSQLClusterArn
+        - PolicyName: CrawlerBucketAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:List*
+                  - s3:Get*
+                Resource:
+                  - !GetAtt ExportBucket.Arn
+                  - !Sub '${ExportBucket.Arn}/*'
+        - PolicyName: ExportKeyUsage
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource:
+                  - !GetAtt KmsKey.Arn
+        - PolicyName: GlueLogsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:AssociateKmsKey
+                Resource: 
+                  - '*'
+        - PolicyName: GlueActions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:BatchCreatePartition
+                  - glue:BatchDeleteTable
+                  - glue:BatchDeleteVersion
+                  - glue:BatchGetPartition
+                  - glue:BatchUpdatePartition
+                  - glue:CreateCatalog
+                  - glue:CreateDatabase
+                  - glue:CreatePartition
+                  - glue:CreatePartitionIndex
+                  - glue:CreateRegistry
+                  - glue:CreateSchema
+                  - glue:CreateTable
+                  - glue:DeleteCatalog
+                  - glue:DeleteColumnStatisticsForPartition
+                  - glue:DeleteColumnStatisticsForTable
+                  - glue:DeleteDatabase
+                  - glue:DeletePartition
+                  - glue:DeletePartitionIndex
+                  - glue:DeleteRegistry
+                  - glue:DeleteSchema
+                  - glue:DeleteSchemaVersions
+                  - glue:DeleteTable
+                  - glue:DeleteTableVersions
+                  - glue:GetCatalog
+                  - glue:GetCatalogs
+                  - glue:GetClassifier
+                  - glue:GetClassifiers
+                  - glue:GetColumnStatisticsForPartition
+                  - glue:GetColumnStatisticsForTable
+                  - glue:GetCompletion
+                  - glue:GetConnection
+                  - glue:GetConnections
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                  - glue:GetPartition
+                  - glue:GetPartitionIndexes
+                  - glue:GetPartitions
+                  - glue:GetPlan
+                  - glue:GetRegistry
+                  - glue:GetSchema
+                  - glue:GetSchemaVersion
+                  - glue:GetTable
+                  - glue:GetTableOptimizer
+                  - glue:GetTableVersion
+                  - glue:GetTableVersions
+                  - glue:GetTables
+                  - glue:ListSchemaVersions
+                  - glue:ListSchemas
+                  - glue:RegisterSchemaVersion
+                  - glue:SearchTables
+                  - glue:UpdateCatalog
+                  - glue:UpdateColumnStatisticsForPartition
+                  - glue:UpdateColumnStatisticsForTable
+                  - glue:UpdateDatabase
+                  - glue:UpdatePartition
+                  - glue:UpdateRegistry
+                  - glue:UpdateSchema
+                  - glue:UpdateTable
+                Resource: 
+                  - '*'
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "glue.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"  
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref SourceDatabaseName
+      DatabaseInput:
+        Description: !Sub 'Exported ${SourceDatabaseName} data'
+        Name: !Ref SourceDatabaseName
+
+  CustomersCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      DatabaseName: !Ref GlueDatabase
+      Name: customers
+      Role: !Ref GlueRole
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${ExportBucket}/${ExportJobName}/${GlueDatabase}/${SourceSchemaName}.customers'
+            Exclusions: 
+              - '_SUCCESS'
+
+  OrdersCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      DatabaseName: !Ref GlueDatabase
+      Name: orders
+      Role: !Ref GlueRole
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${ExportBucket}/${ExportJobName}/${GlueDatabase}/${SourceSchemaName}.orders'
+            Exclusions: 
+              - '_SUCCESS'
+
+  DSQLLoaderJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: storefront-snapshot-dsql-loader
+      Description: Loads data from the exported Aurora PostgreSQL snapshot into Aurora DSQL
+      Command:
+        Name: glueetl
+        PythonVersion: 3
+        ScriptLocation: !GetAtt PutGlueJobCodeToS3.S3Url
+      GlueVersion: 5.1
+      MaxCapacity:  !Ref LoaderJobCapacity
+      Role: !GetAtt GlueRole.Arn
+      DefaultArguments:
+        #'--additional-python-modules': 'boto3>=1.35.95'
+        '--dsql_endpoint': !Ref DSQLClusterEndpoint
+        '--glue_database': !Ref SourceDatabaseName
+        '--schema': !Ref SourceSchemaName
+
+
+Outputs:
+  BucketName:
+    Description: The name of the S3 bucket used to export the snapshot to
+    Value: !Ref ExportBucket
+    
+  KmsKeyArn:
+    Description: The ARN of the KMS key created for the database snapshot export
+    Value: !GetAtt KmsKey.Arn
+
+  SnapshotExportRoleArn:
+    Description: The ARN of the IAM role for the database snapshot export into S3
+    Value: !GetAtt SnapshotExportRole.Arn
+
+  GlueRoleName:
+    Description: The name of the IAM role for the glue crawlers and ETL job
+    Value: !Ref GlueRole
+
+  GlueRoleArn:
+    Description: The ARN of the IAM role for the glue crawlers and ETL job
+    Value: !GetAtt GlueRole.Arn
+
+  GlueJobName:
+    Description: The name of the Glue job
+    Value:  !Ref DSQLLoaderJob
