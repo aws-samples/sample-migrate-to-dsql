@@ -58,26 +58,29 @@ Resources:
       VersioningConfiguration:
         Status: Enabled
 
+  EmptyS3BucketFunctionPolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: EmptyS3BucketFunctionPolicy
+      RoleName: !Ref EmptyS3BucketFunctionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "s3:DeleteObject"
+              - "s3:DeleteObjectVersion"
+              - "s3:ListBucket"
+              - "s3:ListBucketVersions"
+            Resource:
+              - !GetAtt ExportBucket.Arn
+              - !Sub '${ExportBucket.Arn}/*'
 
   EmptyS3BucketFunctionRole:
     Type: "AWS::IAM::Role"
     Properties:
       ManagedPolicyArns:
         - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-      Policies:
-        - PolicyName: "EmptyS3BucketFunctionRights"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: "Allow"
-                Action:
-                  - "s3:DeleteObject"
-                  - "s3:DeleteObjectVersion"
-                  - "s3:ListBucket"
-                  - "s3:ListBucketVersions"
-                Resource:
-                  - !GetAtt ExportBucket.Arn
-                  - !Sub '${ExportBucket.Arn}/*'
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -88,7 +91,6 @@ Resources:
             Action:
               - "sts:AssumeRole"
 
-
   EmptyS3BucketFunction:
     Type: "AWS::Lambda::Function"
     Properties:
@@ -96,6 +98,7 @@ Resources:
       Handler: index.handler
       Runtime: python3.11
       Timeout: 300
+      ReservedConcurrentExecutions: 1
       Role: !GetAtt EmptyS3BucketFunctionRole.Arn
       Code:
         ZipFile: |
@@ -141,15 +144,15 @@ Resources:
                   paginator = s3_client.get_paginator('list_object_versions')
                   iterator = paginator.paginate(Bucket=parameters['Bucket'])
                   for page in iterator:
-                      if 'Versions' not in page:
-                          continue
-          
                       obj_list = []
-                      for version in page['Versions']:
+                      for version in page.get('Versions', []):
                           obj_list.append({'Key': version['Key'], 'VersionId': version['VersionId']})
+                      for marker in page.get('DeleteMarkers', []):
+                          obj_list.append({'Key': marker['Key'], 'VersionId': marker['VersionId']})
           
-                      rm_object = {'Quiet': False, 'Objects': obj_list}
-                      s3_client.delete_objects(Bucket=parameters['Bucket'], Delete=rm_object)
+                      if obj_list:
+                          rm_object = {'Quiet': False, 'Objects': obj_list}
+                          s3_client.delete_objects(Bucket=parameters['Bucket'], Delete=rm_object)
           
                   if respond_to_cfn:
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
@@ -164,6 +167,8 @@ Resources:
 
   EmptyExportBucket:
     Type: Custom::EmptyLambdaCodeBucket
+    DependsOn:
+      - PutGlueJobCodeToS3
     Properties:
       ServiceToken: !GetAtt EmptyS3BucketFunction.Arn
       Bucket: !Ref ExportBucket
@@ -182,8 +187,10 @@ Resources:
               - Effect: "Allow"
                 Action:
                   - "s3:DeleteObject"
+                  - "s3:DeleteObjectVersion"
                   - "s3:GetObject"
                   - "s3:ListBucket"
+                  - "s3:ListBucketVersions"
                   - "s3:PutObject"
                 Resource:
                   - !GetAtt ExportBucket.Arn
@@ -208,6 +215,7 @@ Resources:
       MemorySize: 128
       Timeout: 300
       Role: !GetAtt S3ObjectPutterRole.Arn
+      ReservedConcurrentExecutions: 1
       Code:
         ZipFile: |
           import boto3
@@ -215,12 +223,26 @@ Resources:
           
           s3 = boto3.client('s3')
           
+          def delete_all_versions(bucket, key):
+            paginator = s3.get_paginator('list_object_versions')
+            pages = paginator.paginate(Bucket=bucket, Prefix=key)
+            to_delete = []
+            for page in pages:
+              for v in page.get('Versions', []):
+                if v['Key'] == key:
+                  to_delete.append({'Key': v['Key'], 'VersionId': v['VersionId']})
+              for m in page.get('DeleteMarkers', []):
+                if m['Key'] == key:
+                  to_delete.append({'Key': m['Key'], 'VersionId': m['VersionId']})
+            if to_delete:
+              s3.delete_objects(Bucket=bucket, Delete={'Quiet': True, 'Objects': to_delete})
+
           def handler(event, context):
             try:
               responseData = {}
                     
               if event['RequestType'] == 'Delete':
-                s3.delete_object(Bucket=event['ResourceProperties']['S3Bucket'], Key=event['ResourceProperties']['S3Key'])
+                delete_all_versions(event['ResourceProperties']['S3Bucket'], event['ResourceProperties']['S3Key'])
               elif event['RequestType'] == 'Create':          
                 s3.put_object(Bucket=event['ResourceProperties']['S3Bucket'], Key=event['ResourceProperties']['S3Key'],
                               Body=event['ResourceProperties']['Body'].encode())
@@ -339,42 +361,41 @@ Resources:
     Properties:
       EnableKeyRotation: true
 
+  SnapshotExportPolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: SnapshotExportPolicy
+      RoleName: !Ref SnapshotExportRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject*
+              - s3:ListBucket
+              - s3:GetObject*
+              - s3:DeleteObject*
+              - s3:GetBucketLocation
+            Resource:
+              - !GetAtt ExportBucket.Arn
+              - !Sub '${ExportBucket.Arn}/*'
+          - Effect: Allow
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:GenerateDataKey
+              - kms:GenerateDataKeyWithoutPlaintext
+              - kms:ReEncryptFrom
+              - kms:ReEncryptTo
+              - kms:CreateGrant
+              - kms:DescribeKey
+              - kms:RetireGrant
+            Resource:
+              - !GetAtt KmsKey.Arn
 
   SnapshotExportRole:
     Type: AWS::IAM::Role
     Properties:
-      Policies:
-        - PolicyName: ExportPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:PutObject*
-                  - s3:ListBucket
-                  - s3:GetObject*
-                  - s3:DeleteObject*
-                  - s3:GetBucketLocation
-                Resource:
-                  - !GetAtt ExportBucket.Arn
-                  - !Sub '${ExportBucket.Arn}/*'
-        - PolicyName: 'ExportKeyUsage'
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - kms:Encrypt
-                  - kms:Decrypt
-                  - kms:GenerateDataKey
-                  - kms:GenerateDataKeyWithoutPlaintext
-                  - kms:ReEncryptFrom
-                  - kms:ReEncryptTo
-                  - kms:CreateGrant
-                  - kms:DescribeKey
-                  - kms:RetireGrant
-                Resource:
-                  - !GetAtt KmsKey.Arn
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -385,122 +406,110 @@ Resources:
             Action:
               - "sts:AssumeRole"
 
+  GlueRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: GlueRolePolicy
+      RoleName: !Ref GlueRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - dsql:DbConnectAdmin
+            Resource:
+              - !Ref DSQLClusterArn
+          - Effect: Allow
+            Action:
+              - s3:List*
+              - s3:Get*
+            Resource:
+              - !GetAtt ExportBucket.Arn
+              - !Sub '${ExportBucket.Arn}/*'
+          - Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource:
+              - !GetAtt KmsKey.Arn
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:AssociateKmsKey
+            Resource: 
+              - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-glue/'
+          - Effect: Allow
+            Action:
+              - glue:BatchCreatePartition
+              - glue:BatchDeleteTable
+              - glue:BatchDeleteVersion
+              - glue:BatchGetPartition
+              - glue:BatchUpdatePartition
+              - glue:CreateCatalog
+              - glue:CreateDatabase
+              - glue:CreatePartition
+              - glue:CreatePartitionIndex
+              - glue:CreateRegistry
+              - glue:CreateSchema
+              - glue:CreateTable
+              - glue:DeleteCatalog
+              - glue:DeleteColumnStatisticsForPartition
+              - glue:DeleteColumnStatisticsForTable
+              - glue:DeleteDatabase
+              - glue:DeletePartition
+              - glue:DeletePartitionIndex
+              - glue:DeleteRegistry
+              - glue:DeleteSchema
+              - glue:DeleteSchemaVersions
+              - glue:DeleteTable
+              - glue:DeleteTableVersions
+              - glue:GetCatalog
+              - glue:GetCatalogs
+              - glue:GetClassifier
+              - glue:GetClassifiers
+              - glue:GetColumnStatisticsForPartition
+              - glue:GetColumnStatisticsForTable
+              - glue:GetCompletion
+              - glue:GetConnection
+              - glue:GetConnections
+              - glue:GetDatabase
+              - glue:GetDatabases
+              - glue:GetPartition
+              - glue:GetPartitionIndexes
+              - glue:GetPartitions
+              - glue:GetPlan
+              - glue:GetRegistry
+              - glue:GetSchema
+              - glue:GetSchemaVersion
+              - glue:GetTable
+              - glue:GetTableOptimizer
+              - glue:GetTableVersion
+              - glue:GetTableVersions
+              - glue:GetTables
+              - glue:ListSchemaVersions
+              - glue:ListSchemas
+              - glue:RegisterSchemaVersion
+              - glue:SearchTables
+              - glue:UpdateCatalog
+              - glue:UpdateColumnStatisticsForPartition
+              - glue:UpdateColumnStatisticsForTable
+              - glue:UpdateDatabase
+              - glue:UpdatePartition
+              - glue:UpdateRegistry
+              - glue:UpdateSchema
+              - glue:UpdateTable
+            Resource: 
+              - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+              - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${SourceDatabaseName}'
+              - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${SourceDatabaseName}/*'
+
   GlueRole:
     Type: AWS::IAM::Role
     Properties:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AWSGlueSchemaRegistryFullAccess
-      Policies:
-        - PolicyName: GlueDsqlAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dsql:DbConnectAdmin
-                Resource:
-                  - !Ref DSQLClusterArn
-        - PolicyName: CrawlerBucketAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:List*
-                  - s3:Get*
-                Resource:
-                  - !GetAtt ExportBucket.Arn
-                  - !Sub '${ExportBucket.Arn}/*'
-        - PolicyName: ExportKeyUsage
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - kms:Decrypt
-                  - kms:DescribeKey
-                Resource:
-                  - !GetAtt KmsKey.Arn
-        - PolicyName: GlueLogsAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                  - logs:AssociateKmsKey
-                Resource: 
-                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-glue/'
-        - PolicyName: GlueActions
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - glue:BatchCreatePartition
-                  - glue:BatchDeleteTable
-                  - glue:BatchDeleteVersion
-                  - glue:BatchGetPartition
-                  - glue:BatchUpdatePartition
-                  - glue:CreateCatalog
-                  - glue:CreateDatabase
-                  - glue:CreatePartition
-                  - glue:CreatePartitionIndex
-                  - glue:CreateRegistry
-                  - glue:CreateSchema
-                  - glue:CreateTable
-                  - glue:DeleteCatalog
-                  - glue:DeleteColumnStatisticsForPartition
-                  - glue:DeleteColumnStatisticsForTable
-                  - glue:DeleteDatabase
-                  - glue:DeletePartition
-                  - glue:DeletePartitionIndex
-                  - glue:DeleteRegistry
-                  - glue:DeleteSchema
-                  - glue:DeleteSchemaVersions
-                  - glue:DeleteTable
-                  - glue:DeleteTableVersions
-                  - glue:GetCatalog
-                  - glue:GetCatalogs
-                  - glue:GetClassifier
-                  - glue:GetClassifiers
-                  - glue:GetColumnStatisticsForPartition
-                  - glue:GetColumnStatisticsForTable
-                  - glue:GetCompletion
-                  - glue:GetConnection
-                  - glue:GetConnections
-                  - glue:GetDatabase
-                  - glue:GetDatabases
-                  - glue:GetPartition
-                  - glue:GetPartitionIndexes
-                  - glue:GetPartitions
-                  - glue:GetPlan
-                  - glue:GetRegistry
-                  - glue:GetSchema
-                  - glue:GetSchemaVersion
-                  - glue:GetTable
-                  - glue:GetTableOptimizer
-                  - glue:GetTableVersion
-                  - glue:GetTableVersions
-                  - glue:GetTables
-                  - glue:ListSchemaVersions
-                  - glue:ListSchemas
-                  - glue:RegisterSchemaVersion
-                  - glue:SearchTables
-                  - glue:UpdateCatalog
-                  - glue:UpdateColumnStatisticsForPartition
-                  - glue:UpdateColumnStatisticsForTable
-                  - glue:UpdateDatabase
-                  - glue:UpdatePartition
-                  - glue:UpdateRegistry
-                  - glue:UpdateSchema
-                  - glue:UpdateTable
-                Resource: 
-                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog'
-                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${SourceDatabaseName}'
-                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${SourceDatabaseName}/*'
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
