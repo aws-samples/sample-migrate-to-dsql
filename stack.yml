@@ -2,21 +2,21 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: >
   Creates IAM roles, policies, KMS keys, and an S3 bucket to support the migration from
-  the source database into Aurora DSQL.
+  the source database into Amazon Aurora DSQL.
 
 
 Parameters:
 
   DSQLClusterEndpoint:
-    Description: The endpoint for the target DSQL database cluster
+    Description: The endpoint for the target Amazon Aurora DSQL database cluster
     Type: String
   
   DSQLClusterArn:
-    Description: The ARN of the target DSQL database cluster
+    Description: The ARN of the target Amazon Aurora DSQL database cluster
     Type: String
 
   LoaderJobCapacity:
-    Description: The maximum capacity in AWS Glue data processing units (DPUs) that can be allocated to the DSQL loader job
+    Description: The maximum capacity in AWS Glue data processing units (DPUs) that can be allocated to the Amazon Aurora DSQL loader job
     Type: Number
     Default: 10
     MinValue: 2
@@ -53,6 +53,10 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      LoggingConfiguration:
+        LogFilePrefix: "logs/"
+      VersioningConfiguration:
+        Status: Enabled
 
 
   EmptyS3BucketFunctionRole:
@@ -144,8 +148,8 @@ Resources:
                       for version in page['Versions']:
                           obj_list.append({'Key': version['Key'], 'VersionId': version['VersionId']})
           
-                      kill_object = {'Quiet': False, 'Objects': obj_list}
-                      s3_client.delete_objects(Bucket=parameters['Bucket'], Delete=kill_object)
+                      rm_object = {'Quiet': False, 'Objects': obj_list}
+                      s3_client.delete_objects(Bucket=parameters['Bucket'], Delete=rm_object)
           
                   if respond_to_cfn:
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
@@ -428,7 +432,7 @@ Resources:
                   - logs:PutLogEvents
                   - logs:AssociateKmsKey
                 Resource: 
-                  - '*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-glue/'
         - PolicyName: GlueActions
           PolicyDocument:
             Version: '2012-10-17'
@@ -494,7 +498,9 @@ Resources:
                   - glue:UpdateSchema
                   - glue:UpdateTable
                 Resource: 
-                  - '*'
+                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog'
+                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${SourceDatabaseName}'
+                  - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${SourceDatabaseName}/*'
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -542,7 +548,7 @@ Resources:
     Type: AWS::Glue::Job
     Properties:
       Name: storefront-snapshot-dsql-loader
-      Description: Loads data from the exported Aurora PostgreSQL snapshot into Aurora DSQL
+      Description: Loads data from the exported Aurora PostgreSQL snapshot into Amazon Aurora DSQL
       Command:
         Name: glueetl
         PythonVersion: 3
