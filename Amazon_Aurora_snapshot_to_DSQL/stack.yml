@@ -452,64 +452,15 @@ Resources:
               - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-glue/'
           - Effect: Allow
             Action:
-              - glue:BatchCreatePartition
-              - glue:BatchDeleteTable
-              - glue:BatchDeleteVersion
-              - glue:BatchGetPartition
-              - glue:BatchUpdatePartition
-              - glue:CreateCatalog
-              - glue:CreateDatabase
-              - glue:CreatePartition
-              - glue:CreatePartitionIndex
-              - glue:CreateRegistry
-              - glue:CreateSchema
-              - glue:CreateTable
-              - glue:DeleteCatalog
-              - glue:DeleteColumnStatisticsForPartition
-              - glue:DeleteColumnStatisticsForTable
-              - glue:DeleteDatabase
-              - glue:DeletePartition
-              - glue:DeletePartitionIndex
-              - glue:DeleteRegistry
-              - glue:DeleteSchema
-              - glue:DeleteSchemaVersions
-              - glue:DeleteTable
-              - glue:DeleteTableVersions
-              - glue:GetCatalog
-              - glue:GetCatalogs
-              - glue:GetClassifier
-              - glue:GetClassifiers
-              - glue:GetColumnStatisticsForPartition
-              - glue:GetColumnStatisticsForTable
-              - glue:GetCompletion
-              - glue:GetConnection
-              - glue:GetConnections
               - glue:GetDatabase
               - glue:GetDatabases
-              - glue:GetPartition
-              - glue:GetPartitionIndexes
-              - glue:GetPartitions
-              - glue:GetPlan
-              - glue:GetRegistry
-              - glue:GetSchema
-              - glue:GetSchemaVersion
               - glue:GetTable
-              - glue:GetTableOptimizer
-              - glue:GetTableVersion
-              - glue:GetTableVersions
               - glue:GetTables
-              - glue:ListSchemaVersions
-              - glue:ListSchemas
-              - glue:RegisterSchemaVersion
+              - glue:GetPartition
+              - glue:GetPartitions
+              - glue:GetColumnStatisticsForTable
+              - glue:GetColumnStatisticsForPartition
               - glue:SearchTables
-              - glue:UpdateCatalog
-              - glue:UpdateColumnStatisticsForPartition
-              - glue:UpdateColumnStatisticsForTable
-              - glue:UpdateDatabase
-              - glue:UpdatePartition
-              - glue:UpdateRegistry
-              - glue:UpdateSchema
-              - glue:UpdateTable
             Resource: 
               - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog'
               - !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${SourceDatabaseName}'
@@ -518,8 +469,6 @@ Resources:
   GlueRole:
     Type: AWS::IAM::Role
     Properties:
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AWSGlueSchemaRegistryFullAccess
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
