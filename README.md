@@ -19,6 +19,11 @@ More samples will be added over time. If you have a migration scenario you'd lik
 ## Related repositories
 
 - [aws-samples/aurora-dsql-samples](https://github.com/aws-samples/aurora-dsql-samples) — connectors, ORM examples, authentication, and end-to-end sample applications for Aurora DSQL.
+- [aws-samples/aurora-dsql-loader](https://github.com/aws-samples/aurora-dsql-loader) — bulk data loader for Aurora DSQL.
+- [awslabs/mcp aurora-dsql-mcp-server](https://github.com/awslabs/mcp/tree/main/src/aurora-dsql-mcp-server) — Model Context Protocol (MCP) server for Aurora DSQL.
+- [awslabs/aurora-dsql-orms](https://github.com/awslabs/aurora-dsql-orms) — ORM integration examples for Aurora DSQL.
+- [awslabs/aurora-dsql-tools](https://github.com/awslabs/aurora-dsql-tools) — developer tools and utilities for Aurora DSQL.
+- [awslabs/aurora-dsql-connectors](https://github.com/awslabs/aurora-dsql-connectors) — database connectors for Aurora DSQL.
 
 ## Security
 
