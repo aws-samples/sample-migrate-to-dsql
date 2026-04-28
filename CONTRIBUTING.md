@@ -36,7 +36,17 @@ To send us a pull request, please:
 5. Send us a pull request, answering any default questions in the pull request interface.
 6. Pay attention to any automated CI failures reported in the pull request, and stay involved in the conversation.
 
-GitHub provides additional document on [forking a repository](https://help.github.com/articles/fork-a-repo/) and
+### CI Checks
+
+Pull requests run the following automated checks:
+
+* **Secret scanning** — [gitleaks](https://github.com/gitleaks/gitleaks) scans for accidentally committed secrets.
+* **CloudFormation linting** — [cfn-lint](https://github.com/aws-cloudformation/cfn-lint) validates any `.yml` / `.yaml` templates under `**/stack.yml`, `**/stack.yaml`, or `**/*.template.yaml`.
+* **Dependency review** — flags new dependencies with known vulnerabilities (moderate severity or higher).
+
+These checks run on PRs from both forks and branches in this repository, so external contributors get the same feedback as maintainers.
+
+GitHub provides additional documentation on [forking a repository](https://help.github.com/articles/fork-a-repo/) and
 [creating a pull request](https://help.github.com/articles/creating-a-pull-request/).
 
 
