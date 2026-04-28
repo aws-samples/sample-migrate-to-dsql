@@ -431,12 +431,13 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          # @secure_recommendation: Explicit S3 actions instead of wildcards to minimize privileges
           - Effect: Allow
             Action:
-              - s3:PutObject*
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
               - s3:ListBucket
-              - s3:GetObject*
-              - s3:DeleteObject*
               - s3:GetBucketLocation
             Resource:
               - !GetAtt ExportBucket.Arn
