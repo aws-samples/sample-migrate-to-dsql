@@ -278,6 +278,10 @@ Resources:
 
   PutGlueJobCodeToS3:
     Type: Custom::S3PutObject
+    # Ensure the S3ObjectPutter Lambda's inline policy is attached before we
+    # invoke it; otherwise the PutObject call can race the policy attachment
+    # and fail with AccessDenied.
+    DependsOn: S3ObjectPutterPolicy
     Properties:
       ServiceToken: !GetAtt S3ObjectPutterFunction.Arn
       S3Bucket:  !Ref ExportBucket

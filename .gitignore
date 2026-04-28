@@ -108,3 +108,4 @@ dist/
 
 # Nested git directories in sample projects
 sample-amazon-aurora-dsql-agent/.git/
+Amazon_Aurora_snapshot_to_DSQL/storefront.sql
