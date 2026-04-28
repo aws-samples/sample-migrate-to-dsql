@@ -40,8 +40,60 @@ Parameters:
 
 Resources:
 
+  # @secure_recommendation: Dedicated logging bucket separate from the data bucket
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join ["-", ["storefront-logs", !Ref AWS::Region, !Ref AWS::AccountId]]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      AccessControl: LogDeliveryWrite
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+
+  # @secure_recommendation: Restrict writes to S3 logging service only; deny non-TLS traffic
+  LogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LogsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowS3LoggingDelivery
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub "${LogsBucket.Arn}/*"
+            Condition:
+              ArnLike:
+                "aws:SourceArn": !Sub "arn:aws:s3:::storefront-${AWS::Region}-${AWS::AccountId}"
+              StringEquals:
+                "aws:SourceAccount": !Ref AWS::AccountId
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt LogsBucket.Arn
+              - !Sub "${LogsBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+
   ExportBucket:
     Type: AWS::S3::Bucket
+    DependsOn: LogsBucketPolicy
     Properties:
       BucketName: !Join ["-", ["storefront", !Ref AWS::Region, !Ref AWS::AccountId]]
       BucketEncryption:
@@ -54,6 +106,7 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
       LoggingConfiguration:
+        DestinationBucketName: !Ref LogsBucket
         LogFilePrefix: "logs/"
       VersioningConfiguration:
         Status: Enabled
@@ -96,6 +149,8 @@ Resources:
             Resource:
               - !GetAtt ExportBucket.Arn
               - !Sub '${ExportBucket.Arn}/*'
+              - !GetAtt LogsBucket.Arn
+              - !Sub '${LogsBucket.Arn}/*'
 
   EmptyS3BucketFunctionRole:
     Type: "AWS::IAM::Role"
@@ -193,6 +248,12 @@ Resources:
     Properties:
       ServiceToken: !GetAtt EmptyS3BucketFunction.Arn
       Bucket: !Ref ExportBucket
+
+  EmptyLogsBucket:
+    Type: Custom::EmptyLambdaCodeBucket
+    Properties:
+      ServiceToken: !GetAtt EmptyS3BucketFunction.Arn
+      Bucket: !Ref LogsBucket
 
   S3ObjectPutterPolicy:
     Type: AWS::IAM::RolePolicy
