@@ -60,6 +60,25 @@ Resources:
       ObjectLockEnabled: false
       AccessControl: Private
 
+  # @secure_recommendation: Enforce HTTPS-only access to prevent data interception in transit
+  ExportBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ExportBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt ExportBucket.Arn
+              - !Sub "${ExportBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+
   EmptyS3BucketFunctionPolicy:
     Type: AWS::IAM::RolePolicy
     Properties:
