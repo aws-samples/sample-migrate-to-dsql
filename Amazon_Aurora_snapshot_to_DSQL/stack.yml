@@ -43,7 +43,7 @@ Resources:
   ExportBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Join ["-", ["storefront", !Ref AWS::AccountId]]
+      BucketName: !Join ["-", ["storefront", !Ref AWS::Region, !Ref AWS::AccountId]]
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -98,7 +98,7 @@ Resources:
     Properties:
       Description: "Deletes all objects and object versions from an S3 bucket"
       Handler: index.handler
-      Runtime: python3.11
+      Runtime: python3.12
       Timeout: 300
       ReservedConcurrentExecutions: 1
       Role: !GetAtt EmptyS3BucketFunctionRole.Arn
@@ -160,7 +160,7 @@ Resources:
                       cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
           
                   return response_data
-              except:
+              except Exception:
                   logger.exception(event)
           
                   if respond_to_cfn:
@@ -216,7 +216,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       Description: "Writes provided object content to S3"
-      Runtime: python3.11
+      Runtime: python3.12
       Handler: index.handler
       MemorySize: 128
       Timeout: 300
