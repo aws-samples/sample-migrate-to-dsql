@@ -389,6 +389,39 @@ Resources:
     Type: AWS::KMS::Key
     Properties:
       EnableKeyRotation: true
+      # @secure_recommendation: Explicit key policy restricting access to only the roles that need it
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableIAMUserPermissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: AllowSnapshotExportRole
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt SnapshotExportRole.Arn
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:GenerateDataKey
+              - kms:GenerateDataKeyWithoutPlaintext
+              - kms:ReEncryptFrom
+              - kms:ReEncryptTo
+              - kms:CreateGrant
+              - kms:DescribeKey
+              - kms:RetireGrant
+            Resource: "*"
+          - Sid: AllowGlueRole
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt GlueRole.Arn
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+            Resource: "*"
 
   SnapshotExportPolicy:
     Type: AWS::IAM::RolePolicy
