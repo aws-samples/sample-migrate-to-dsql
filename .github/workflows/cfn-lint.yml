@@ -1,0 +1,38 @@
+# Validates CloudFormation templates in the repo on every PR.
+# Addresses a finding from the open-source security review.
+name: cfn-lint
+
+permissions: {}
+
+on:
+  workflow_call: {}
+
+jobs:
+  cfn-lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Lint CloudFormation templates
+        run: |
+          shopt -s globstar nullglob
+          templates=( **/stack.yml **/stack.yaml **/*.template.yaml **/*.template.yml )
+          if [ ${#templates[@]} -eq 0 ]; then
+            echo "No CloudFormation templates found to lint"
+            exit 0
+          fi
+          echo "Linting ${#templates[@]} template(s):"
+          printf '  %s\n' "${templates[@]}"
+          cfn-lint "${templates[@]}"
+        shell: bash

@@ -1,0 +1,39 @@
+# Orchestrates all PR CI. The "gate" job always runs and can be configured as
+# the single required status check in GitHub branch protection.
+name: CI Gate
+
+permissions: {}
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gitleaks:
+    uses: ./.github/workflows/gitleaks-scan.yml
+    secrets: inherit
+
+  deps-review:
+    uses: ./.github/workflows/deps-review.yml
+
+  cfn-lint:
+    uses: ./.github/workflows/cfn-lint.yml
+
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    needs:
+      - gitleaks
+      - deps-review
+      - cfn-lint
+    if: always()
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const needs = ${{ toJSON(needs) }};
+            for (const [job, result] of Object.entries(needs)) {
+              if (result.result === 'failure' || result.result === 'cancelled') {
+                core.setFailed(`Job ${job} ${result.result}`);
+              }
+            }
