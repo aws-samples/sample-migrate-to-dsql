@@ -12,7 +12,7 @@ Each subdirectory is a self-contained migration sample with its own README, arch
 
 | Source                                | Migration Approach                      | Sample                                                                             |
 |:--------------------------------------|:----------------------------------------|:-----------------------------------------------------------------------------------|
-| Amazon Aurora PostgreSQL snapshot     | Snapshot → S3 → AWS Glue PySpark → DSQL | [Amazon_Aurora_snapshot_to_DSQL](Amazon_Aurora_snapshot_to_DSQL) |
+| Amazon Aurora PostgreSQL snapshot     | Snapshot → S3 → AWS Glue PySpark → DSQL | [amazon-aurora-snapshots-to-dsql](amazon-aurora-snapshots-to-dsql) |
 
 More samples will be added over time. If you have a migration scenario you'd like to see covered, [open an issue](../../issues) or contribute a sample via a pull request.
 
