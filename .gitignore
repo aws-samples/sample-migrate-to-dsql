@@ -84,7 +84,7 @@ hs_err_pid*
 *.rar
 
 # Sample data files that are intentionally tracked
-!Amazon_Aurora_snapshot_to_DSQL/storefront.sql.zip
+!amazon-aurora-snapshots-to-dsql/storefront.sql.zip
 
 # virtual machine crash logs
 hs_err_pid*
@@ -108,4 +108,4 @@ dist/
 
 # Nested git directories in sample projects
 sample-amazon-aurora-dsql-agent/.git/
-Amazon_Aurora_snapshot_to_DSQL/storefront.sql
+amazon-aurora-snapshots-to-dsql/storefront.sql
